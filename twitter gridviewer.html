@@ -1,0 +1,819 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Contact Sheet — X Likes Mosaic Web</title>
+  <!-- JSZip for parsing ZIP archives client-side -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <!-- idb-keyval for key-value storage -->
+  <script src="https://cdn.jsdelivr.net/npm/idb-keyval@6/dist/umd-min.js"></script>
+  <style>
+    :root {
+      --bg: #141210;
+      --panel: #1c1815;
+      --line: #34302b;
+      --accent: #ff6b35;
+      --accent-dim: rgba(255, 107, 53, 0.16);
+      --text: #ede7e0;
+      --muted: #8a8078;
+      --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+      --grid-min-width: 220px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      padding: 16px 24px;
+      background: linear-gradient(#141210 78%, transparent);
+      border-bottom: 1px dashed var(--line);
+    }
+
+    .brand { display: flex; align-items: center; gap: 10px; }
+
+    .tick {
+      width: 9px; height: 9px; border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 4px var(--accent-dim);
+    }
+
+    .brand h1 { font-size: 16px; margin: 0; font-weight: 700; }
+
+    .roll {
+      font-family: var(--mono);
+      font-size: 11.5px;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 3px 10px;
+    }
+
+    .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+    .import-btn {
+      font-family: var(--sans);
+      font-size: 12.5px;
+      font-weight: 600;
+      background: transparent;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      border-radius: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+      transition: border-color 0.15s ease, color 0.15s ease;
+    }
+    .import-btn:hover { border-color: var(--accent); color: var(--text); }
+    .import-btn.danger:hover { border-color: #ff4d4d; color: #ff4d4d; }
+
+    .import-status {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+      padding: 12px 24px 0;
+    }
+    .import-status.error { color: #ff9a9a; }
+    .import-status:empty { display: none; }
+
+    #search, #sort, #pageSize {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 12.5px;
+      font-family: var(--sans);
+    }
+    #search { width: 220px; }
+
+    .zoom-control {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      height: 34px;
+      padding: 3px 5px 3px 9px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .zoom-label { font: 11.5px var(--mono); color: var(--muted); }
+    .zoom-btn {
+      width: 26px; height: 26px; padding: 0;
+      border: 1px solid var(--line); border-radius: 6px;
+      background: transparent; color: var(--text);
+      font: 600 16px var(--sans); cursor: pointer;
+    }
+    .zoom-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+    .zoom-btn:disabled { opacity: 0.35; cursor: default; }
+    .zoom-value { min-width: 42px; text-align: center; color: var(--muted); font: 10.5px var(--mono); }
+
+    .pagination {
+      display: flex; align-items: center; justify-content: center;
+      gap: 16px; padding: 8px 24px 40px;
+    }
+
+    .page-btn {
+      font-family: var(--sans); font-size: 12.5px; font-weight: 600;
+      background: var(--panel); border: 1px solid var(--line);
+      color: var(--text); border-radius: 8px; padding: 8px 14px;
+      cursor: pointer;
+    }
+    .page-btn:hover:not(:disabled) { border-color: var(--accent); }
+    .page-btn:disabled { opacity: 0.35; cursor: default; }
+
+    .page-counter {
+      display: inline-flex; align-items: center; gap: 7px;
+      font: 600 12px var(--mono); color: var(--muted);
+    }
+    .page-input {
+      width: 58px; height: 34px; border: 1px solid var(--line);
+      border-radius: 8px; background: var(--panel); color: var(--text);
+      font: 600 12px var(--mono); text-align: center;
+    }
+
+    .safelight { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+    .safelight input { position: absolute; opacity: 0; width: 0; height: 0; }
+    .safelight .slider {
+      width: 34px; height: 18px; border-radius: 999px;
+      background: var(--panel); border: 1px solid var(--line); position: relative;
+    }
+    .safelight .slider::after {
+      content: ""; position: absolute; top: 2px; left: 2px;
+      width: 12px; height: 12px; border-radius: 50%; background: var(--muted);
+      transition: transform 0.2s ease;
+    }
+    .safelight input:checked + .slider { background: var(--accent-dim); border-color: var(--accent); }
+    .safelight input:checked + .slider::after { transform: translateX(16px); background: var(--accent); }
+    .safelight-label { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+    .safelight input:checked ~ .safelight-label { color: var(--accent); }
+
+    .sheet { 
+      column-width: var(--grid-min-width); 
+      column-gap: 12px; 
+      padding: 20px 24px 60px; 
+    }
+
+    .frame {
+      break-inside: avoid; 
+      margin-bottom: 12px; 
+      position: relative;
+      border-radius: 6px; 
+      overflow: hidden; 
+      border: 1px solid var(--line);
+      background: var(--panel); 
+      cursor: pointer;
+      transition: border-color 0.15s ease, transform 0.15s ease;
+      display: inline-block;
+      width: 100%;
+    }
+    .frame:hover { border-color: var(--accent); transform: translateY(-2px); }
+
+    .media-wrap { 
+      position: relative; 
+      width: 100%; 
+      overflow: hidden; 
+      background: #12100e; 
+    }
+
+    .frame img {
+      width: 100%;
+      height: auto;
+      display: block;
+      object-fit: contain;
+    }
+
+    .hover-video { 
+      position: absolute; 
+      inset: 0; 
+      width: 100%; 
+      height: 100%;
+      object-fit: cover;
+      opacity: 0; 
+      pointer-events: none; 
+      transition: opacity 0.12s ease; 
+    }
+    .frame.video-previewing .hover-video { opacity: 1; }
+
+    .text-fallback { min-height: 150px; padding: 18px 16px 34px; display: flex; flex-direction: column; gap: 9px; background: var(--panel); }
+    .fallback-author { color: var(--accent); font: 600 11px var(--mono); }
+    .fallback-text { color: var(--text); font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
+
+    .frame .video-badge, .frame .multi-badge {
+      position: absolute; top: 6px; font-family: var(--mono); font-size: 10px;
+      background: rgba(20, 18, 16, 0.75); border-radius: 4px; padding: 2px 5px; z-index: 2;
+    }
+    .frame .video-badge { right: 6px; color: var(--accent); border: 1px solid var(--accent); }
+    .frame .multi-badge { left: 6px; color: var(--text); border: 1px solid var(--line); }
+    .frame .frame-no {
+      position: absolute; bottom: 6px; left: 6px; font-family: var(--mono);
+      font-size: 10px; color: var(--muted); background: rgba(20, 18, 16, 0.7);
+      border-radius: 4px; padding: 2px 6px; z-index: 2;
+    }
+
+    .frame .caption {
+      position: absolute; inset: auto 0 0 0; padding: 22px 8px 8px;
+      background: linear-gradient(transparent, rgba(20, 18, 16, 0.95) 55%);
+      color: var(--text); font-size: 11.5px; opacity: 0; transform: translateY(4px);
+      transition: opacity 0.15s ease, transform 0.15s ease; pointer-events: none; z-index: 3;
+    }
+    .sheet.lit .frame .caption { opacity: 1; transform: translateY(0); }
+    .frame .caption .author { display: block; font-family: var(--mono); color: var(--accent); }
+
+    .empty { text-align: center; padding: 80px 24px; color: var(--muted); }
+    .empty-frame { font-family: var(--mono); color: var(--text); font-size: 12px; }
+    .hidden { display: none !important; }
+
+    .lightbox {
+      position: fixed; inset: 0; background: rgba(10, 9, 8, 0.92); z-index: 50;
+      display: flex; align-items: center; justify-content: center; padding: 30px;
+    }
+    .lightbox-inner {
+      position: relative; max-width: 900px; max-height: 90vh; width: 100%;
+      display: flex; flex-direction: column; align-items: center; gap: 12px;
+    }
+    .lightbox img, .lightbox video { max-width: 100%; max-height: 68vh; border-radius: 8px; border: 1px solid var(--line); }
+    .lb-close {
+      position: absolute; top: -14px; right: -14px; width: 32px; height: 32px;
+      border-radius: 50%; background: var(--panel); border: 1px solid var(--line);
+      color: var(--text); font-size: 18px; cursor: pointer;
+    }
+    .lb-close:hover { border-color: var(--accent); color: var(--accent); }
+    .lb-meta { width: 100%; max-width: 640px; text-align: center; }
+    .lb-author { font-family: var(--mono); color: var(--accent); font-size: 13px; }
+    .lb-text { color: var(--text); font-size: 13.5px; line-height: 1.5; margin: 8px 0; }
+    .lb-meta a { font-family: var(--mono); font-size: 11.5px; color: var(--muted); text-decoration: none; border-bottom: 1px dashed var(--line); }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="tick"></span>
+      <h1>Contact&nbsp;Sheet</h1>
+      <span class="roll" id="rollCount">roll of 0</span>
+    </div>
+
+    <div class="controls">
+      <input id="search" type="search" placeholder="Filter by @handle or word…" />
+
+      <select id="sort">
+        <option value="new">Newest posts first</option>
+        <option value="old">Oldest posts first</option>
+        <option value="author">By @handle</option>
+      </select>
+
+      <select id="pageSize" title="Frames per page">
+        <option value="50">50 / page</option>
+        <option value="100" selected>100 / page</option>
+        <option value="200">200 / page</option>
+        <option value="500">500 / page</option>
+        <option value="all">All</option>
+      </select>
+
+      <div class="zoom-control" role="group" aria-label="Grid image size">
+        <span class="zoom-label">Zoom</span>
+        <button id="zoomOut" class="zoom-btn" type="button" aria-label="Make media smaller">−</button>
+        <span id="zoomValue" class="zoom-value">220px</span>
+        <button id="zoomIn" class="zoom-btn" type="button" aria-label="Make media larger">+</button>
+      </div>
+
+      <label class="safelight" title="Toggle captions">
+        <input type="checkbox" id="safelight" />
+        <span class="slider"></span>
+        <span class="safelight-label">Safelight</span>
+      </label>
+
+      <button id="importBtn" class="import-btn">Import Archive…</button>
+      <button id="clearBtn" class="import-btn danger">Clear Data</button>
+      <input id="importFile" type="file" accept=".zip,.json,.jsonl,.txt" hidden />
+    </div>
+  </header>
+
+  <p id="importStatus" class="import-status"></p>
+
+  <main id="sheet" class="sheet"></main>
+
+  <nav id="pagination" class="pagination">
+    <button id="prevPage" class="page-btn">‹ Prev</button>
+    <span class="page-counter" aria-label="Current page out of total pages">
+      <input id="pageInput" class="page-input" type="number" min="1" value="1" inputmode="numeric" />
+      <span class="page-slash">/</span>
+      <span id="pageTotal" class="page-total">1</span>
+    </span>
+    <button id="nextPage" class="page-btn">Next ›</button>
+  </nav>
+
+  <div id="empty" class="empty">
+    <p class="empty-frame">— NO FRAMES ON THIS ROLL —</p>
+    <p>Upload a Twitter/X export file (<code>.json</code> or <code>.zip</code> archive) to generate your media contact sheet.</p>
+  </div>
+
+  <div id="lightbox" class="lightbox hidden">
+    <div class="lightbox-inner">
+      <button id="closeLightbox" class="lb-close" aria-label="Close">×</button>
+      <img id="lbImage" alt="" />
+      <video id="lbVideo" class="hidden" controls></video>
+      <div class="lb-meta">
+        <span id="lbAuthor" class="lb-author"></span>
+        <p id="lbText" class="lb-text"></p>
+        <a id="lbLink" target="_blank" rel="noopener">Open on X ↗</a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const PREFIX = "t_"; // Individual key prefix in IDB
+    const sheetEl = document.getElementById("sheet");
+    const emptyEl = document.getElementById("empty");
+    const rollCountEl = document.getElementById("rollCount");
+    const searchEl = document.getElementById("search");
+    const sortEl = document.getElementById("sort");
+    const safelightEl = document.getElementById("safelight");
+    const pageSizeEl = document.getElementById("pageSize");
+    const prevPageBtn = document.getElementById("prevPage");
+    const nextPageBtn = document.getElementById("nextPage");
+    const pageTotalEl = document.getElementById("pageTotal");
+    const paginationEl = document.getElementById("pagination");
+    const pageInputEl = document.getElementById("pageInput");
+    const zoomOutBtn = document.getElementById("zoomOut");
+    const zoomInBtn = document.getElementById("zoomIn");
+    const zoomValueEl = document.getElementById("zoomValue");
+    const clearBtn = document.getElementById("clearBtn");
+
+    const ZOOM_STORAGE_KEY = "xlikes_grid_zoom";
+    const ZOOM_MIN = 140;
+    const ZOOM_MAX = 360;
+    const ZOOM_STEP = 20;
+    let gridZoom = ZOOM_MIN;
+
+    let currentPage = 1;
+    let isScrolling = false;
+    let scrollStopTimer = null;
+    const activePreviews = new Set();
+    let memoryStore = []; // In-memory fallback if IndexedDB is blocked completely
+
+    function scrollToTop() {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    function setScrolling(value) {
+      isScrolling = value;
+      if (value) {
+        for (const video of activePreviews) {
+          video.pause();
+        }
+        activePreviews.clear();
+        document.querySelectorAll(".frame.video-previewing").forEach((frame) => {
+          frame.classList.remove("video-previewing");
+        });
+      }
+    }
+
+    window.addEventListener("scroll", () => {
+      setScrolling(true);
+      clearTimeout(scrollStopTimer);
+      scrollStopTimer = setTimeout(() => setScrolling(false), 140);
+    }, { passive: true });
+
+    const lightbox = document.getElementById("lightbox");
+    const lbImage = document.getElementById("lbImage");
+    const lbVideo = document.getElementById("lbVideo");
+    const lbAuthor = document.getElementById("lbAuthor");
+    const lbText = document.getElementById("lbText");
+    const lbLink = document.getElementById("lbLink");
+
+    let allTweets = [];
+
+    function setGridZoom(value, save = true) {
+      gridZoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(value / ZOOM_STEP) * ZOOM_STEP));
+      document.documentElement.style.setProperty("--grid-min-width", `${gridZoom}px`);
+      zoomValueEl.textContent = `${gridZoom}px`;
+      zoomOutBtn.disabled = gridZoom <= ZOOM_MIN;
+      zoomInBtn.disabled = gridZoom >= ZOOM_MAX;
+      if (save) {
+        try { localStorage.setItem(ZOOM_STORAGE_KEY, String(gridZoom)); } catch(_e) {}
+      }
+    }
+
+    try {
+      const savedZoom = Number.parseInt(localStorage.getItem(ZOOM_STORAGE_KEY), 10);
+      if (Number.isFinite(savedZoom)) gridZoom = savedZoom;
+    } catch (_e) {}
+    setGridZoom(gridZoom, false);
+
+    // Fetch stored tweets item by item to avoid large buffer issues
+    async function getStoredTweets() {
+      if (memoryStore.length > 0) return memoryStore;
+      try {
+        if (window.idbKeyval) {
+          const keys = await idbKeyval.keys();
+          const tweetKeys = keys.filter(k => typeof k === 'string' && k.startsWith(PREFIX));
+          const items = await Promise.all(tweetKeys.map(k => idbKeyval.get(k)));
+          return items.filter(Boolean);
+        }
+      } catch (_e) {
+        // IDB blocked or private browsing mode
+      }
+      return memoryStore;
+    }
+
+    async function saveTweetsBatch(records) {
+      let savedInDb = false;
+      if (window.idbKeyval) {
+        try {
+          // Write individually to avoid hitting single transaction quotas
+          for (const rec of records) {
+            await idbKeyval.set(PREFIX + rec.id, rec);
+          }
+          savedInDb = true;
+        } catch (_e) {
+          savedInDb = false;
+        }
+      }
+      // Keep in memory fallback
+      const existingIds = new Set(memoryStore.map(t => t.id));
+      records.forEach(r => {
+        if (!existingIds.has(r.id)) memoryStore.push(r);
+      });
+      return savedInDb;
+    }
+
+    async function loadTweets() {
+      allTweets = await getStoredTweets();
+      currentPage = 1;
+      render();
+    }
+
+    function applyFilters() {
+      const q = searchEl.value.trim().toLowerCase();
+      let list = allTweets;
+
+      if (q) {
+        list = list.filter(
+          (t) =>
+            t.author.toLowerCase().includes(q) ||
+            (t.text && t.text.toLowerCase().includes(q))
+        );
+      }
+
+      const sort = sortEl.value;
+      const when = (t) => t.postedAt || t.capturedAt || 0;
+      list = [...list].sort((a, b) => {
+        if (sort === "new") return when(b) - when(a);
+        if (sort === "old") return when(a) - when(b);
+        if (sort === "author") return a.author.localeCompare(b.author);
+        return 0;
+      });
+
+      return list;
+    }
+
+    function makeTextFallback(tweet, reason = "") {
+      const fallback = document.createElement("div");
+      fallback.className = "text-fallback";
+
+      const author = document.createElement("div");
+      author.className = "fallback-author";
+      author.textContent = tweet.author ? `@${tweet.author}` : "Unknown author";
+      fallback.appendChild(author);
+
+      const text = document.createElement("div");
+      text.className = "fallback-text";
+      text.textContent = tweet.text || (reason || "Media unavailable");
+      fallback.appendChild(text);
+
+      return fallback;
+    }
+
+    function frameTile(tweet, index) {
+      const frame = document.createElement("div");
+      frame.className = "frame";
+
+      const cover = tweet.images?.[0] || tweet.videoPoster;
+      const hasMedia = !!cover;
+      let mediaFailed = false;
+
+      if (hasMedia) {
+        const mediaWrap = document.createElement("div");
+        mediaWrap.className = "media-wrap";
+
+        const img = document.createElement("img");
+        img.src = cover;
+        img.loading = "eager";
+        img.decoding = "async";
+        img.alt = tweet.text ? tweet.text.slice(0, 80) : `Post by @${tweet.author}`;
+
+        img.addEventListener("error", () => {
+          if (mediaFailed) return;
+          mediaFailed = true;
+          mediaWrap.replaceChildren(makeTextFallback(tweet, "Media unavailable"));
+          frame.classList.add("text-only");
+        }, { once: true });
+
+        mediaWrap.appendChild(img);
+        frame.appendChild(mediaWrap);
+
+        if (tweet.hasVideo && tweet.videoUrl) {
+          const preview = document.createElement("video");
+          preview.className = "hover-video";
+          preview.muted = true;
+          preview.loop = true;
+          preview.playsInline = true;
+          preview.preload = "none";
+          preview.poster = tweet.videoPoster || cover;
+          preview.dataset.src = tweet.videoUrl;
+
+          let hoverTimer = null;
+          let hovered = false;
+
+          const startPreview = () => {
+            hovered = true;
+            if (hoverTimer) clearTimeout(hoverTimer);
+            hoverTimer = setTimeout(async () => {
+              if (!hovered || isScrolling || mediaFailed) return;
+              if (!preview.src) preview.src = preview.dataset.src;
+              try {
+                await preview.play();
+                if (hovered && !isScrolling) {
+                  activePreviews.add(preview);
+                  frame.classList.add("video-previewing");
+                }
+              } catch (_e) {}
+            }, 90);
+          };
+
+          const stopPreview = () => {
+            hovered = false;
+            if (hoverTimer) clearTimeout(hoverTimer);
+            preview.pause();
+            activePreviews.delete(preview);
+            frame.classList.remove("video-previewing");
+          };
+
+          frame.addEventListener("pointerenter", startPreview);
+          frame.addEventListener("pointerleave", stopPreview);
+          mediaWrap.appendChild(preview);
+        }
+      } else {
+        frame.classList.add("text-only");
+        frame.appendChild(makeTextFallback(tweet));
+      }
+
+      if (tweet.hasVideo) {
+        const badge = document.createElement("span");
+        badge.className = "video-badge";
+        badge.textContent = "VIDEO";
+        frame.appendChild(badge);
+      }
+
+      if ((tweet.images?.length || 0) > 1) {
+        const badge = document.createElement("span");
+        badge.className = "multi-badge";
+        badge.textContent = `×${tweet.images.length}`;
+        frame.appendChild(badge);
+      }
+
+      const frameNo = document.createElement("span");
+      frameNo.className = "frame-no";
+      frameNo.textContent = `No. ${String(index + 1).padStart(3, "0")}`;
+      frame.appendChild(frameNo);
+
+      if (tweet.text || tweet.author) {
+        const caption = document.createElement("div");
+        caption.className = "caption";
+        const author = document.createElement("span");
+        author.className = "author";
+        author.textContent = `@${tweet.author}`;
+        caption.appendChild(author);
+        if (tweet.text) {
+          const p = document.createElement("span");
+          p.textContent = tweet.text.length > 120 ? tweet.text.slice(0, 117) + "…" : tweet.text;
+          caption.appendChild(p);
+        }
+        frame.appendChild(caption);
+      }
+
+      frame.addEventListener("click", () => openLightbox(tweet));
+      return frame;
+    }
+
+    function getPageSize() {
+      return pageSizeEl.value === "all" ? Infinity : parseInt(pageSizeEl.value, 10);
+    }
+
+    function render() {
+      const list = applyFilters();
+      const total = list.length;
+      const pageSize = getPageSize();
+      const totalPages = pageSize === Infinity ? 1 : Math.max(1, Math.ceil(total / pageSize));
+      if (currentPage > totalPages) currentPage = totalPages;
+      if (currentPage < 1) currentPage = 1;
+
+      const start = pageSize === Infinity ? 0 : (currentPage - 1) * pageSize;
+      const end = pageSize === Infinity ? total : Math.min(start + pageSize, total);
+      const pageItems = list.slice(start, end);
+
+      rollCountEl.textContent = `roll of ${allTweets.length}`;
+
+      sheetEl.innerHTML = "";
+      if (total === 0) {
+        emptyEl.classList.remove("hidden");
+        sheetEl.classList.add("hidden");
+        paginationEl.classList.add("hidden");
+        return;
+      }
+      emptyEl.classList.add("hidden");
+      sheetEl.classList.remove("hidden");
+
+      const fragment = document.createDocumentFragment();
+      pageItems.forEach((t, i) => fragment.appendChild(frameTile(t, start + i)));
+      sheetEl.appendChild(fragment);
+
+      paginationEl.classList.remove("hidden");
+      pageInputEl.value = currentPage;
+      pageTotalEl.textContent = totalPages;
+      prevPageBtn.disabled = currentPage <= 1;
+      nextPageBtn.disabled = currentPage >= totalPages;
+    }
+
+    function openLightbox(tweet) {
+      const isVideo = tweet.hasVideo && tweet.videoPoster && tweet.videoUrl;
+      lbImage.classList.toggle("hidden", isVideo);
+      lbVideo.classList.toggle("hidden", !isVideo);
+
+      if (isVideo) {
+        lbVideo.poster = tweet.videoPoster;
+        lbVideo.src = tweet.videoUrl || "";
+      } else {
+        lbImage.src = tweet.images?.[0] || tweet.videoPoster || "";
+      }
+
+      lbAuthor.textContent = `@${tweet.author}`;
+      lbText.textContent = tweet.text || "";
+      lbLink.href = tweet.url;
+
+      lightbox.classList.remove("hidden");
+    }
+
+    document.getElementById("closeLightbox").addEventListener("click", () => {
+      lightbox.classList.add("hidden");
+      lbVideo.pause();
+    });
+
+    clearBtn.addEventListener("click", async () => {
+      if (confirm("Are you sure you want to clear stored likes?")) {
+        try {
+          if (window.idbKeyval) {
+            const keys = await idbKeyval.keys();
+            for (const k of keys) {
+              if (typeof k === 'string' && k.startsWith(PREFIX)) {
+                await idbKeyval.del(k);
+              }
+            }
+          }
+        } catch (_e) {}
+        memoryStore = [];
+        await loadTweets();
+      }
+    });
+
+    const importBtn = document.getElementById("importBtn");
+    const importFile = document.getElementById("importFile");
+    const importStatus = document.getElementById("importStatus");
+
+    function setImportStatus(msg, isError = false) {
+      importStatus.textContent = msg;
+      importStatus.classList.toggle("error", isError);
+    }
+
+    function parseExportText(text) {
+      const trimmed = text.trim();
+      if (trimmed.startsWith("[")) return JSON.parse(trimmed);
+      return trimmed.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => JSON.parse(l));
+    }
+
+    function mapRecord(rec) {
+      if (rec.category_name && rec.category_name !== "like") return null;
+      const mediaItems = rec.media_items || [];
+      const images = [];
+      let videoUrl = null;
+      let hasVideo = false;
+
+      for (const m of mediaItems) {
+        if (m.media_url_https) images.push(m.media_url_https);
+        if (m.type === "video" || m.type === "animated_gif") {
+          hasVideo = true;
+          const mp4s = (m.video_info?.variants || []).filter((v) => v.content_type === "video/mp4");
+          mp4s.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+          if (!videoUrl) videoUrl = mp4s[0]?.url || null;
+        }
+      }
+
+      if (!rec.tweet_id || !rec.screen_name) return null;
+
+      return {
+        id: String(rec.tweet_id),
+        author: rec.screen_name,
+        text: rec.full_text || "",
+        images,
+        videoPoster: hasVideo ? images[0] : null,
+        videoUrl,
+        hasVideo,
+        postedAt: rec.created_at ? rec.created_at * 1000 : null,
+        url: `https://x.com/${rec.screen_name}/status/${rec.tweet_id}`,
+      };
+    }
+
+    async function handleImportFile(file) {
+      try {
+        setImportStatus(`Reading ${file.name}…`);
+        let text = "";
+
+        if (file.name.endsWith(".zip")) {
+          const zip = await JSZip.loadAsync(file);
+          const firstFileName = Object.keys(zip.files)[0];
+          text = await zip.files[firstFileName].async("string");
+        } else {
+          text = await file.text();
+        }
+
+        setImportStatus("Parsing records…");
+        const records = parseExportText(text);
+        const mappedRecords = [];
+
+        records.forEach((rec) => {
+          const mapped = mapRecord(rec);
+          if (mapped) mappedRecords.push(mapped);
+        });
+
+        setImportStatus(`Processing ${mappedRecords.length} records…`);
+        const persisted = await saveTweetsBatch(mappedRecords);
+
+        if (!persisted) {
+          setImportStatus(`Loaded ${mappedRecords.length} posts (Session Memory). Data cannot persist due to iOS storage restrictions.`, false);
+        } else {
+          setImportStatus(`Imported ${mappedRecords.length} posts successfully.`);
+        }
+        
+        await loadTweets();
+      } catch (err) {
+        setImportStatus(`Import failed: ${err.message}`, true);
+      }
+    }
+
+    importBtn.addEventListener("click", () => importFile.click());
+    importFile.addEventListener("change", () => {
+      if (importFile.files[0]) handleImportFile(importFile.files[0]);
+    });
+
+    safelightEl.addEventListener("change", () => {
+      sheetEl.classList.toggle("lit", safelightEl.checked);
+    });
+
+    zoomOutBtn.addEventListener("click", () => setGridZoom(gridZoom - ZOOM_STEP));
+    zoomInBtn.addEventListener("click", () => setGridZoom(gridZoom + ZOOM_STEP));
+
+    prevPageBtn.addEventListener("click", () => { 
+      currentPage--; 
+      render(); 
+      scrollToTop();
+    });
+    
+    nextPageBtn.addEventListener("click", () => { 
+      currentPage++; 
+      render(); 
+      scrollToTop();
+    });
+    
+    pageInputEl.addEventListener("change", () => {
+      currentPage = parseInt(pageInputEl.value, 10) || 1;
+      render();
+      scrollToTop();
+    });
+
+    searchEl.addEventListener("input", () => { currentPage = 1; render(); });
+    sortEl.addEventListener("change", () => { currentPage = 1; render(); });
+    pageSizeEl.addEventListener("change", () => { 
+      currentPage = 1; 
+      render(); 
+      scrollToTop();
+    });
+
+    loadTweets();
+  </script>
+</body>
+</html>
