@@ -1,4 +1,3 @@
-# gummiez.github.io
 <!doctype html>
 <html lang="en">
 <head>
