@@ -1,4 +1,3 @@
-# gummiez.github.io
 <!doctype html>
 <html lang="en">
 <head>
@@ -191,24 +190,21 @@
       background: #12100e; 
     }
 
-    .frame img {
+    .frame img, .frame video {
       width: 100%;
       height: auto;
       display: block;
       object-fit: contain;
     }
 
-    .hover-video { 
-      position: absolute; 
-      inset: 0; 
-      width: 100%; 
+    .frame video.hover-video {
+      position: absolute;
+      inset: 0;
+      width: 100%;
       height: 100%;
       object-fit: cover;
-      opacity: 0; 
-      pointer-events: none; 
-      transition: opacity 0.12s ease; 
+      z-index: 1;
     }
-    .frame.video-previewing .hover-video { opacity: 1; }
 
     .text-fallback { min-height: 150px; padding: 18px 16px 34px; display: flex; flex-direction: column; gap: 9px; background: var(--panel); }
     .fallback-author { color: var(--accent); font: 600 11px var(--mono); }
@@ -248,16 +244,30 @@
       display: flex; flex-direction: column; align-items: center; gap: 12px;
     }
     .lightbox img, .lightbox video { max-width: 100%; max-height: 68vh; border-radius: 8px; border: 1px solid var(--line); }
+    
+    .lb-iframe-wrap {
+      width: 100%;
+      max-width: 520px;
+      display: flex;
+      justify-content: center;
+    }
+
     .lb-close {
       position: absolute; top: -14px; right: -14px; width: 32px; height: 32px;
       border-radius: 50%; background: var(--panel); border: 1px solid var(--line);
-      color: var(--text); font-size: 18px; cursor: pointer;
+      color: var(--text); font-size: 18px; cursor: pointer; z-index: 10;
     }
     .lb-close:hover { border-color: var(--accent); color: var(--accent); }
     .lb-meta { width: 100%; max-width: 640px; text-align: center; }
     .lb-author { font-family: var(--mono); color: var(--accent); font-size: 13px; }
     .lb-text { color: var(--text); font-size: 13.5px; line-height: 1.5; margin: 8px 0; }
-    .lb-meta a { font-family: var(--mono); font-size: 11.5px; color: var(--muted); text-decoration: none; border-bottom: 1px dashed var(--line); }
+    .lb-meta a.btn-link {
+      display: inline-block; margin-top: 6px; padding: 10px 18px;
+      background: var(--accent); color: #fff; font-family: var(--sans);
+      font-size: 13px; font-weight: 600; border-radius: 8px;
+      text-decoration: none; transition: opacity 0.15s ease;
+    }
+    .lb-meta a.btn-link:hover { opacity: 0.88; text-decoration: none; }
   </style>
 </head>
 <body>
@@ -276,6 +286,8 @@
         <option value="old">Oldest posts first</option>
         <option value="author">By @handle</option>
       </select>
+
+      <button id="randomPageBtnTop" class="import-btn" title="Jump to a random page">🎲 Random Page</button>
 
       <select id="pageSize" title="Frames per page">
         <option value="50">50 / page</option>
@@ -326,18 +338,21 @@
   <div id="lightbox" class="lightbox hidden">
     <div class="lightbox-inner">
       <button id="closeLightbox" class="lb-close" aria-label="Close">×</button>
-      <img id="lbImage" alt="" />
-      <video id="lbVideo" class="hidden" controls></video>
+      <img id="lbImage" alt="" class="hidden" />
+      <video id="lbVideo" controls playsinline class="hidden"></video>
+      
+      <div id="lbIframeWrap" class="lb-iframe-wrap hidden"></div>
+
       <div class="lb-meta">
         <span id="lbAuthor" class="lb-author"></span>
         <p id="lbText" class="lb-text"></p>
-        <a id="lbLink" target="_blank" rel="noopener">Open on X ↗</a>
+        <a id="lbLink" class="btn-link" target="_blank" rel="noopener">Open Post on X ↗</a>
       </div>
     </div>
   </div>
 
   <script>
-    const PREFIX = "t_"; // Individual key prefix in IDB
+    const PREFIX = "t_";
     const sheetEl = document.getElementById("sheet");
     const emptyEl = document.getElementById("empty");
     const rollCountEl = document.getElementById("rollCount");
@@ -354,6 +369,7 @@
     const zoomInBtn = document.getElementById("zoomIn");
     const zoomValueEl = document.getElementById("zoomValue");
     const clearBtn = document.getElementById("clearBtn");
+    const randomPageBtnTop = document.getElementById("randomPageBtnTop");
 
     const ZOOM_STORAGE_KEY = "xlikes_grid_zoom";
     const ZOOM_MIN = 140;
@@ -362,37 +378,13 @@
     let gridZoom = ZOOM_MIN;
 
     let currentPage = 1;
-    let isScrolling = false;
-    let scrollStopTimer = null;
-    const activePreviews = new Set();
-    let memoryStore = []; // In-memory fallback if IndexedDB is blocked completely
-
-    function scrollToTop() {
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    }
-
-    function setScrolling(value) {
-      isScrolling = value;
-      if (value) {
-        for (const video of activePreviews) {
-          video.pause();
-        }
-        activePreviews.clear();
-        document.querySelectorAll(".frame.video-previewing").forEach((frame) => {
-          frame.classList.remove("video-previewing");
-        });
-      }
-    }
-
-    window.addEventListener("scroll", () => {
-      setScrolling(true);
-      clearTimeout(scrollStopTimer);
-      scrollStopTimer = setTimeout(() => setScrolling(false), 140);
-    }, { passive: true });
+    let memoryStore = [];
+    let currentFetchController = null;
 
     const lightbox = document.getElementById("lightbox");
     const lbImage = document.getElementById("lbImage");
     const lbVideo = document.getElementById("lbVideo");
+    const lbIframeWrap = document.getElementById("lbIframeWrap");
     const lbAuthor = document.getElementById("lbAuthor");
     const lbText = document.getElementById("lbText");
     const lbLink = document.getElementById("lbLink");
@@ -416,7 +408,6 @@
     } catch (_e) {}
     setGridZoom(gridZoom, false);
 
-    // Fetch stored tweets item by item to avoid large buffer issues
     async function getStoredTweets() {
       if (memoryStore.length > 0) return memoryStore;
       try {
@@ -426,9 +417,7 @@
           const items = await Promise.all(tweetKeys.map(k => idbKeyval.get(k)));
           return items.filter(Boolean);
         }
-      } catch (_e) {
-        // IDB blocked or private browsing mode
-      }
+      } catch (_e) {}
       return memoryStore;
     }
 
@@ -436,7 +425,6 @@
       let savedInDb = false;
       if (window.idbKeyval) {
         try {
-          // Write individually to avoid hitting single transaction quotas
           for (const rec of records) {
             await idbKeyval.set(PREFIX + rec.id, rec);
           }
@@ -445,7 +433,6 @@
           savedInDb = false;
         }
       }
-      // Keep in memory fallback
       const existingIds = new Set(memoryStore.map(t => t.id));
       records.forEach(r => {
         if (!existingIds.has(r.id)) memoryStore.push(r);
@@ -507,6 +494,7 @@
       const cover = tweet.images?.[0] || tweet.videoPoster;
       const hasMedia = !!cover;
       let mediaFailed = false;
+      let hoverVideoEl = null;
 
       if (hasMedia) {
         const mediaWrap = document.createElement("div");
@@ -528,46 +516,34 @@
         mediaWrap.appendChild(img);
         frame.appendChild(mediaWrap);
 
-        if (tweet.hasVideo && tweet.videoUrl) {
-          const preview = document.createElement("video");
-          preview.className = "hover-video";
-          preview.muted = true;
-          preview.loop = true;
-          preview.playsInline = true;
-          preview.preload = "none";
-          preview.poster = tweet.videoPoster || cover;
-          preview.dataset.src = tweet.videoUrl;
+        if (tweet.hasVideo) {
+          frame.addEventListener("mouseenter", async () => {
+            if (hoverVideoEl || mediaFailed) return;
+            
+            const videoUrl = `https://d.fxtwitter.com/i/status/${tweet.id}.mp4`;
+            if (!frame.matches(":hover")) return;
 
-          let hoverTimer = null;
-          let hovered = false;
+            hoverVideoEl = document.createElement("video");
+            hoverVideoEl.src = videoUrl;
+            hoverVideoEl.autoplay = true;
+            hoverVideoEl.loop = true;
+            hoverVideoEl.muted = true;
+            hoverVideoEl.playsInline = true;
+            hoverVideoEl.className = "hover-video";
 
-          const startPreview = () => {
-            hovered = true;
-            if (hoverTimer) clearTimeout(hoverTimer);
-            hoverTimer = setTimeout(async () => {
-              if (!hovered || isScrolling || mediaFailed) return;
-              if (!preview.src) preview.src = preview.dataset.src;
-              try {
-                await preview.play();
-                if (hovered && !isScrolling) {
-                  activePreviews.add(preview);
-                  frame.classList.add("video-previewing");
-                }
-              } catch (_e) {}
-            }, 90);
-          };
+            mediaWrap.appendChild(hoverVideoEl);
+            hoverVideoEl.play().catch(() => {});
+          });
 
-          const stopPreview = () => {
-            hovered = false;
-            if (hoverTimer) clearTimeout(hoverTimer);
-            preview.pause();
-            activePreviews.delete(preview);
-            frame.classList.remove("video-previewing");
-          };
-
-          frame.addEventListener("pointerenter", startPreview);
-          frame.addEventListener("pointerleave", stopPreview);
-          mediaWrap.appendChild(preview);
+          frame.addEventListener("mouseleave", () => {
+            if (hoverVideoEl) {
+              hoverVideoEl.pause();
+              hoverVideoEl.removeAttribute("src");
+              hoverVideoEl.load();
+              hoverVideoEl.remove();
+              hoverVideoEl = null;
+            }
+          });
         }
       } else {
         frame.classList.add("text-only");
@@ -616,14 +592,20 @@
       return pageSizeEl.value === "all" ? Infinity : parseInt(pageSizeEl.value, 10);
     }
 
+    function getTotalPages() {
+      const total = applyFilters().length;
+      const pageSize = getPageSize();
+      return pageSize === Infinity ? 1 : Math.max(1, Math.ceil(total / pageSize));
+    }
+
     function render() {
       const list = applyFilters();
       const total = list.length;
-      const pageSize = getPageSize();
-      const totalPages = pageSize === Infinity ? 1 : Math.max(1, Math.ceil(total / pageSize));
+      const totalPages = getTotalPages();
       if (currentPage > totalPages) currentPage = totalPages;
       if (currentPage < 1) currentPage = 1;
 
+      const pageSize = getPageSize();
       const start = pageSize === Infinity ? 0 : (currentPage - 1) * pageSize;
       const end = pageSize === Infinity ? total : Math.min(start + pageSize, total);
       const pageItems = list.slice(start, end);
@@ -651,29 +633,158 @@
       nextPageBtn.disabled = currentPage >= totalPages;
     }
 
-    function openLightbox(tweet) {
-      const isVideo = tweet.hasVideo && tweet.videoPoster && tweet.videoUrl;
-      lbImage.classList.toggle("hidden", isVideo);
-      lbVideo.classList.toggle("hidden", !isVideo);
-
-      if (isVideo) {
-        lbVideo.poster = tweet.videoPoster;
-        lbVideo.src = tweet.videoUrl || "";
-      } else {
-        lbImage.src = tweet.images?.[0] || tweet.videoPoster || "";
+    function cancelActiveFetch() {
+      if (currentFetchController) {
+        currentFetchController.abort();
+        currentFetchController = null;
       }
+    }
+
+    function resetAndUnloadLightbox() {
+      cancelActiveFetch();
+
+      lbVideo.pause();
+      lbVideo.removeAttribute("src");
+      lbVideo.load();
+      lbVideo.onerror = null;
+      lbVideo.classList.add("hidden");
+
+      lbIframeWrap.replaceChildren();
+      lbIframeWrap.classList.add("hidden");
+
+      lbImage.removeAttribute("src");
+      lbImage.classList.add("hidden");
+    }
+
+    // Option 1: Official Embedded Twitter iFrame Viewer (Last Resort)
+    function renderOption1IframeFallback(tweetId) {
+      resetAndUnloadLightbox();
+
+      lbIframeWrap.classList.remove("hidden");
+      const iframe = document.createElement("iframe");
+      iframe.src = `https://platform.twitter.com/embed/Tweet.html?id=${tweetId}&theme=dark`;
+      iframe.height = "480";
+      iframe.setAttribute("frameborder", "0");
+      iframe.setAttribute("scrolling", "no");
+      iframe.setAttribute("allowtransparency", "true");
+      iframe.setAttribute("allowfullscreen", "true");
+      iframe.style.width = "100%";
+      iframe.style.borderRadius = "12px";
+      iframe.style.border = "1px solid var(--line)";
+      iframe.style.background = "var(--panel)";
+
+      lbIframeWrap.appendChild(iframe);
+      lbAuthor.textContent = "";
+      lbText.textContent = "";
+    }
+
+    // Helper to play direct HTML5 video stream
+    function playDirectVideo(videoUrl, tweetId) {
+      lbIframeWrap.classList.add("hidden");
+      lbVideo.src = videoUrl;
+      lbVideo.classList.remove("hidden");
+
+      // Attach single-use error listener: If direct MP4 fails to load/play, fallback to Option 1
+      lbVideo.onerror = () => {
+        console.warn("Direct video stream failed to load. Falling back to Option 1 (Embed).");
+        renderOption1IframeFallback(tweetId);
+      };
+
+      lbVideo.play().catch(() => {});
+    }
+
+    // STEP 3 -> STEP 2 -> STEP 1 Fallback Pipeline
+    async function resolveAndPlayVideo(tweet) {
+      // --- OPTION 3: Proxy Stream (fxtwitter) ---
+      let proxyVideoUrl = null;
+
+      try {
+        // Direct stream download URL provided by FixTweet service
+        const directMp4Url = `https://d.fxtwitter.com/i/status/${tweet.id}.mp4`;
+        
+        // Quick HEAD request check to verify if direct stream exists
+        const checkRes = await fetch(directMp4Url, { method: "HEAD", mode: "cors" });
+        if (checkRes.ok) {
+          proxyVideoUrl = directMp4Url;
+        }
+      } catch (_e) {
+        // If HEAD check fails due to CORS, try API endpoint via corsproxy
+        try {
+          cancelActiveFetch();
+          currentFetchController = new AbortController();
+          const apiUrl = `https://corsproxy.io/?${encodeURIComponent(`https://api.fxtwitter.com/i/status/${tweet.id}`)}`;
+          
+          const res = await fetch(apiUrl, { signal: currentFetchController.signal });
+          if (res.ok) {
+            const data = await res.json();
+            const videos = data.tweet?.media?.videos;
+            if (videos && videos.length > 0) {
+              proxyVideoUrl = videos[0].url;
+            }
+          }
+        } catch (_err) {
+          proxyVideoUrl = null;
+        }
+      }
+
+      // If Option 3 succeeded, play it
+      if (proxyVideoUrl) {
+        playDirectVideo(proxyVideoUrl, tweet.id);
+        return;
+      }
+
+      // --- OPTION 2: Native Local/Archive Video Source ---
+      if (tweet.videoUrl) {
+        playDirectVideo(tweet.videoUrl, tweet.id);
+        return;
+      }
+
+      // --- OPTION 1: Twitter Embed iFrame (Fallback) ---
+      renderOption1IframeFallback(tweet.id);
+    }
+
+    async function openLightbox(tweet) {
+      resetAndUnloadLightbox();
 
       lbAuthor.textContent = `@${tweet.author}`;
       lbText.textContent = tweet.text || "";
       lbLink.href = tweet.url;
 
       lightbox.classList.remove("hidden");
+
+      if (tweet.hasVideo) {
+        await resolveAndPlayVideo(tweet);
+      } else {
+        lbImage.classList.remove("hidden");
+        lbImage.src = tweet.images?.[0] || "";
+      }
     }
 
-    document.getElementById("closeLightbox").addEventListener("click", () => {
+    function closeLightbox() {
       lightbox.classList.add("hidden");
-      lbVideo.pause();
+      resetAndUnloadLightbox();
+    }
+
+    document.getElementById("closeLightbox").addEventListener("click", closeLightbox);
+    lightbox.addEventListener("click", (e) => {
+      if (e.target === lightbox) closeLightbox();
     });
+
+    function jumpToRandomPage() {
+      const totalPages = getTotalPages();
+      if (totalPages <= 1) return;
+      let nextRandomPage = currentPage;
+
+      while (nextRandomPage === currentPage) {
+        nextRandomPage = Math.floor(Math.random() * totalPages) + 1;
+      }
+
+      currentPage = nextRandomPage;
+      render();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    randomPageBtnTop.addEventListener("click", jumpToRandomPage);
 
     clearBtn.addEventListener("click", async () => {
       if (confirm("Are you sure you want to clear stored likes?")) {
@@ -711,16 +822,14 @@
       if (rec.category_name && rec.category_name !== "like") return null;
       const mediaItems = rec.media_items || [];
       const images = [];
-      let videoUrl = null;
       let hasVideo = false;
+      let videoUrl = null;
 
       for (const m of mediaItems) {
         if (m.media_url_https) images.push(m.media_url_https);
         if (m.type === "video" || m.type === "animated_gif") {
           hasVideo = true;
-          const mp4s = (m.video_info?.variants || []).filter((v) => v.content_type === "video/mp4");
-          mp4s.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
-          if (!videoUrl) videoUrl = mp4s[0]?.url || null;
+          videoUrl = m.video_info?.variants?.[0]?.url || m.media_url_https || null;
         }
       }
 
@@ -791,19 +900,19 @@
     prevPageBtn.addEventListener("click", () => { 
       currentPage--; 
       render(); 
-      scrollToTop();
+      window.scrollTo({ top: 0, behavior: "smooth" });
     });
     
     nextPageBtn.addEventListener("click", () => { 
       currentPage++; 
       render(); 
-      scrollToTop();
+      window.scrollTo({ top: 0, behavior: "smooth" });
     });
     
     pageInputEl.addEventListener("change", () => {
       currentPage = parseInt(pageInputEl.value, 10) || 1;
       render();
-      scrollToTop();
+      window.scrollTo({ top: 0, behavior: "smooth" });
     });
 
     searchEl.addEventListener("input", () => { currentPage = 1; render(); });
@@ -811,7 +920,7 @@
     pageSizeEl.addEventListener("change", () => { 
       currentPage = 1; 
       render(); 
-      scrollToTop();
+      window.scrollTo({ top: 0, behavior: "smooth" });
     });
 
     loadTweets();
